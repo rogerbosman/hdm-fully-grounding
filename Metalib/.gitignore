@@ -1,0 +1,15 @@
+*.v.d
+.coqdeps.d
+*.vo*
+*.v-e
+*.glob
+.*.aux
+*.v.d
+*.bak
+*.mk*
+coqsplit*
+_CoqProject
+*_full.v
+*_sol.v
+.lia.cache
+Metalib/html/
