@@ -1,0 +1,1580 @@
+embed {{ coq
+(*Require Import TLC.LibTactics.*)
+Require Import LibTactics.LibTactics.
+Require Import Coq.micromega.Lia.
+Require Export Metalib.LibLNgen.
+Require Import Coq.Program.Equality.
+Require Import Metalib.MetatheoryAtom.
+Require Import Cpdtlib.CpdtTactics.
+
+Require Import Defs.HdmRewrites.
+
+From Coq Require Import Init.Logic.
+
+#[export] Hint Constructors Compare : core.
+Set Warnings "-notation-overridden".
+
+Open Scope program_scope.
+}}
+
+indexvar index, in, out ::= {{ coq nat }}
+         
+metavar termvar, x, y ::= {{ com term variable }}
+                          {{ coq-equality apply eq_dec. }} 
+                          {{ lex alphanum }}
+                          {{ tex \mathit{[[termvar]]} }}
+                          {{ repr-locally-nameless }}
+  
+metavar   dskvar
+        , dskA {{ tex a }}
+        , dskB {{ tex b }}
+        ::= {{ com Skolem variable }}
+            {{ coq-equality apply eq_dec. }} 
+            {{ coq-equality }}
+            {{ lex alphanum}}
+            {{ repr-locally-nameless }}
+
+metavar   skvar
+        , skA {{ tex \widehat{ \text{a} } }}
+        , skB {{ tex \widehat{ \text{b} } }}
+        ::= {{ com Skolem variable }} {{ coq-equality apply eq_dec. }}
+            {{ coq-equality }}
+            {{ lex alphanum}}
+            {{ repr-locally-nameless }}
+ 
+metavar   exvar
+        , exA {{ tex \widehat{\alpha} }}
+        , exB {{ tex \widehat{\beta} }}
+        ::= {{ com existential variable }}
+            {{ coq atom }}
+            {{ coq-equality apply eq_dec. }} 
+            {{ lex alphanum }}
+
+grammar
+  e :: 'e_' ::= {{ com Terms }} {{ coq-equality }}
+    | x                    ::   :: Var                     {{ com Term variable }}
+    | unit                 ::   :: Unit                    {{ com Term unit }}
+    | e1 e2                ::   :: App                     {{ com Application }}
+    | \ x . e              ::   :: Lam (+ bind x in e +)   {{ com Abstraction }}
+    | let x = e1 inlet e2  ::   :: Let (+ bind x in e2 +)  {{ com Let binding }}
+    | ( e )                :: S :: Paren                   {{ com Parenthesis }} {{ icho [[e]] }}
+
+  DTy {{ tex \tau }} :: 'DT_' ::= {{ com Dec Types }} {{ coq-equality }}
+    | dskA         ::   :: SkVar                 {{ com Skolem variable }} 
+    | Unit         ::   :: Unit                  {{ com Unit type }}
+    | DTy1 -> DTy2 ::   :: Fun                   {{ com Function type }}
+    | ( DTy )      :: S :: Paren                 {{ com Parenthesis }} {{ icho [[DTy]]  }}
+
+  DSch {{ tex \sigma }} :: 'DS_' ::= {{ com Dec Type schemes }} {{ coq-equality }}
+    | DTy                 ::   :: Mono                            {{ com Monotype }}
+    | forall dskA . DSch  ::   :: Forall  (+ bind dskA in DSch +) {{ com Forall }}
+    | [ DTy / dskA ] DSch :: M :: SubstSk                         {{ com Skolem substitution }}
+                                                                  {{ coq ( subst_dskvar_DSch [[DTy]] [[dskA]] [[DSch]] ) }}
+
+  Ty {{ tex T }} :: 'T_' ::= {{ com Types }} {{ coq-equality }}
+    | skA          ::   :: SkVar                 {{ com Skolem variable }} 
+    | exA          ::   :: ExVar                 {{ com Existential variable }}
+    | Unit         ::   :: Unit                  {{ com Unit type }}
+    | Ty1 -> Ty2   ::   :: Fun                   {{ com Function type }}
+    | ( Ty )       :: S :: Paren                 {{ com Parenthesis }} {{ icho [[Ty]]  }}
+
+  Sch {{ tex S }} :: 'S_' ::= {{ com Type schemes }} {{ coq-equality }}
+    | Ty               ::   :: Mono                         {{ com Monotype }}
+    | forall skA . Sch ::   :: Forall (+ bind skA in Sch +) {{ com Forall }}
+    | [ Ty / exA ] Sch :: M :: SubstEx                      {{ com Existential substitution }}
+                                                            {{ coq ( subst_exvar_Sch [[Ty]] [[exA]] [[Sch]] ) }}
+    | [ Ty / skA ] Sch :: M :: SubstSk                      {{ com Skolem substitution }}
+                                                            {{ coq ( subst_skvar_Sch [[Ty]] [[skA]] [[Sch]] ) }}
+    | DSub Sch         :: M :: SubInst                      {{ com Instatiation substitution }}
+                                                            {{ coq ( DSub_app [[Sch]] [[DSub]] ) }}
+
+
+substitutions
+  single e   x    :: subst_tm
+
+  single DTy  dskA :: subst_dskvar
+
+  single Ty  exA  :: subst_exvar
+  single Ty  skA  :: subst_skvar
+
+freevars
+  e    x    :: free_xs
+
+  DTy  dskA :: free_dskvars
+
+  Ty   skA  :: free_skvars
+  Ty   exA  :: free_exvars
+
+grammar 
+  DA {{ tex \overline{a} }} :: 'DA_' ::= {{ com Decl Skolem variable list }} {{ coq list dskvar }}
+    | bullet     :: M :: Empty     {{ com Empty environment }}
+                                   {{ coq nil }}
+    | DA ; dskA  :: M :: Cons      {{ com Cons existential }}
+                                   {{ coq ( cons [[dskA]] [[DA]] ) }}
+    | ( DA )     :: M :: Paren     {{ com Parenthesis }} {{ icho [[DA]]  }} 
+    | < dskA >   :: M :: Singleton {{ com Singleton  }}
+                                   {{ coq ( [[dskA]] :: nil ) }}
+    | DA1 ++ DA2 :: M :: Append    {{ com Append }} {{ coq ( [[DA2]] ++ [[DA1]] ) }}
+
+  DObj {{ tex o }} :: 'DObj_' ::= {{ com Objects }}
+    | [ DA ] DSch ::   :: DSch   {{ com Scheme }}
+
+  DEnv {{ tex \Gamma }} :: 'DEnv_' ::= {{ com Dec Environment }}
+    | bullet            ::   :: Empty        {{ com Empty environment }}
+    | DEnv ; dskA       ::   :: DSkol        {{ com Cons Sk }}
+    | DEnv ; x : DSch   ::   :: DVar         {{ com Cons Variable }}
+    | DEnv ; { DObj }   ::   :: DObj         {{ com Cons Object }}
+    | DEnv ; DA         :: M :: DA           {{ com Cons DA }}
+                                             {{ coq ( DEnv_DA [[DEnv]] [[DA]] ) }} 
+    | ( DEnv )          :: M :: Paren        {{ com Parenthesis }}
+                                             {{ icho [[DEnv]]  }} 
+    | < dskA >          :: M :: SkSingleton  {{ com Singleton Sk }}
+                                             {{ coq ( DEnv_DSkol DEnv_Empty [[dskA]] ) }}
+    | < DA >            :: M :: DASingleton  {{ com Singleton DA }}
+                                             {{ coq ( DEnv_DA DEnv_Empty [[DA]] ) }} 
+    | < x : DSch >      :: M :: VarSingleton {{ com Singleton Var }}
+                                             {{ coq ( DEnv_DVar DEnv_Empty [[x]] [[DSch]] ) }}
+    | < { DObj } >      :: M :: ObjSingleton {{ com Singleton Obj }}
+                                             {{ coq ( DEnv_DObj DEnv_Empty [[DObj]] ) }}
+    | DEnv1 + DEnv2     :: M :: Append       {{ com Environment append }}
+                                             {{ coq (DEnv_app [[DEnv1]] [[DEnv2]]) }}
+
+grammar
+  Obj {{ tex O }} :: 'Obj_' ::= {{ com Objects }}
+    % | t         ::   :: t    {{ com Elaborated Term }}
+    | [ A ] Sch ::   :: Sch    {{ com Scheme }}
+    | Sch       :: M :: SchNoA {{ com Scheme without A }}
+                               {{ coq ( Obj_Sch nil [[Sch]] ) }}
+
+  A {{ tex A }} :: 'A_' ::=  {{ com Existential environment }} {{ coq list exvar }}
+    | bullet        :: M :: Empty      {{ com Empty environment }}
+                                       {{ coq nil }}
+    | A ; exA       :: M :: Cons       {{ com Cons existential }}
+                                       {{ coq ( cons [[exA]] [[A]] ) }}
+    | ( A )         :: M :: Paren      {{ com Parenthesis }}
+                                       {{ icho [[A]]  }}
+    | < exA >       :: M :: Singleton  {{ com Singleton }}
+                                       {{ coq ( [[exA]] :: nil ) }}
+    | < exA ; exB > :: M :: Twingleton {{ com Singleton }}
+                                       {{ coq ( cons [[exB]] ([[exA]] :: nil) ) }}
+    | A1 ++ A2      :: M :: Append     {{ com Existential Environment append }} {{ coq ( [[A2]] ++ [[A1]] ) }}
+
+  Env {{ tex \Psi }} :: 'Env_' ::= {{ com Environment }}
+    | bullet             ::   :: Empty      {{ com Empty environment }}
+    | Env ; skA          ::   :: Skol       {{ com Cons Skolem variable }}
+    | Env ; A            ::   :: A          {{ com Cons Existential environment }}
+    | Env ; x : Sch      ::   :: Var        {{ com Cons Variable }}
+    | Env ; { Obj }      ::   :: Obj        {{ com Cons Object }}
+    | < A >              :: S :: ASingleton {{ com Singleton A }}
+                                            {{ coq ( Env_A   Env_Empty [[A]]           ) }}
+    | < x : Sch >        :: S :: XSingleton {{ com Singleton X }}
+                                            {{ coq ( Env_Var Env_Empty [[x]]   [[Sch]] ) }}
+    | < { Obj } >        :: S :: OSingleton {{ com Singleton X }}
+                                            {{ coq ( Env_Obj Env_Empty [[Obj]]         ) }}
+    | ( Env )            :: S :: Paren      {{ com Parenthesis }}
+                                            {{ icho [[Env]]  }}
+    | Env1 + Env2        :: M :: Append     {{ com Environment append }}
+                                            {{ coq (Env_app [[Env1]] [[Env2]]) }}
+    | [ Ty / exA ] Env   :: M :: TySubst    {{ com Substitution }}
+                                            {{ coq ( subst_exvar_Env [[Ty]] [[exA]] [[Env]] ) }}
+    | Sub Env            :: M :: Subst      {{ com Substitution }}
+                                            {{ coq ( Sub_app_Env [[Env]] [[Sub]] ) }}
+
+  Eqs {{ tex E }} :: 'Eqs_' ::= {{ coq-equality }} {{ coq list (Ty * Ty) }}
+    | bullet                ::   :: Empty     {{ com Empty equaltities }}
+                                              {{ coq nil }}
+    | Ty1 sim Ty2 ; Eqs     ::   :: ConsEqs   {{ com Cons Equality }}
+                                              {{ coq ( ([[Ty1]],[[Ty2]]) :: [[Eqs]] ) }}
+    | < Ty1 sim Ty2 >       :: S :: Singleton {{ com Singleton }} {{ coq ( ([[Ty1]],[[Ty2]]) :: nil ) }}
+    | [ Ty / exA ] Eqs      :: M :: Subst     {{ com Substitution }}
+                                              {{ coq ( subst_exvar_Eqs [[Ty]] [[exA]] [[Eqs]] ) }}
+    | Sub Eqs               :: M :: Subst'    {{ com Substitution' }}
+                                              {{ coq ( Sub_app_Eqs [[Eqs]] [[Sub]] ) }}
+    | ( Ty1 sim Ty2 ) ; Eqs :: M :: Paren     {{ com Parenthesis }}
+                                              {{ coq ( ([[Ty1]],[[Ty2]]) :: [[Eqs]] ) }}
+
+  Sub {{ tex \gamma }} :: 'Sub_' ::= {{ coq-equality }} {{ coq list (exvar * Ty) }}
+    | bullet                ::   :: Empty     {{ com Empty substitution }}
+                                              {{ coq nil }}
+    | Sub dot [ Ty / exA ]  ::   :: Cons      {{ com Cons substitution }}
+                                              {{ coq ( ( [[exA]] , [[Ty]] ) :: [[Sub]] ) }}
+    | < [ Ty / exA ] >      :: M :: Singleton {{ com Singleton }} {{ tex \lbrack [[Ty]] / [[exA]] \rbrack }}
+                                              {{ coq ( ( [[exA]], [[Ty]] ) :: nil)  }}
+    | ( Sub )               :: M :: Paren     {{ com Parenthesis }}
+                                              {{ icho [[Sub]]  }}
+    | Sub1 + Sub2           :: M :: Append    {{ com Append }}
+                                              {{ coq ([[Sub2]] ++ [[Sub1]])  }}
+
+  DSub {{ tex \theta }} :: 'DSub_' ::= {{ coq-equality }} {{ coq list (exvar * DTy) }}
+    | bullet                 ::   :: Empty     {{ com Empty substitution }}
+                                               {{ coq nil }}
+    | DSub dot [ DTy / exA ] ::   :: Cons      {{ com Cons substitution }}
+                                               {{ coq ( ( [[exA]], [[DTy]] ) :: [[DSub]] ) }}
+    | ( DSub )               :: M :: Paren     {{ com Parenthesis }}
+                                               {{ icho [[DSub]]  }}
+    | DSub1 + DSub2          :: M :: Append    {{ com Append }}
+                                               {{ coq ([[DSub2]] ++ [[DSub1]])  }}
+
+% grammar
+%   t :: 't_' ::= {{ com Elaborated terms }} {{ coq-equality }}
+%     | x                             ::   :: TmVar                     {{ com Term variable }}
+%     | skA                           ::   :: TyVar                     {{ com Term variable }}
+%     | exA                           ::   :: ExVar                     {{ com Term variable }}
+%     | unit                          ::   :: Unit                      {{ com Term unit }}
+%     | t1 t2                         ::   :: App                       {{ com Application }}
+%     | \ ( x : Sch ) . t             ::   :: TmLam  (+ bind x in t +)  {{ com Term Abstraction }}
+%     | \\ skA . t                    ::   :: TyLam (+ bind skA in t +) {{ com Type Abstraction }}
+%     | let ( x : Sch ) = t1 inlet t2 ::   :: Let (+ bind x in t2 +)    {{ com Let binding }}
+%     | ( t )                         :: S :: Paren                     {{ com Parenthesis }} {{ icho [[t]] }}
+
+terminals :: 'terminals_' ::=
+  | \            ::  :: lambda             {{ tex \lambda }}
+  | \\           ::  :: Lambda             {{ tex \Lambda }}
+  | -->          ::  :: red                {{ tex \longrightarrow }}
+  | ->           ::  :: funarr             {{ tex \to }}
+  | ~>           ::  :: instarr            {{ tex \leadsto }}
+  | bullet       ::  :: bullet             {{ tex \bullet }}
+  | let          ::  :: let                {{ tex \textbf{let} }}
+  | inlet        ::  :: in                 {{ tex \textbf{in} }}
+  | unit         ::  :: teUnit             {{ tex \texttt{unit} }}
+  | Unit         ::  :: tyUnit             {{ tex \texttt{Unit} }}
+  | forall       ::  :: forall             {{ tex \forall }}
+  | Forall       ::  :: Forall             {{ tex \forall }}
+  | .            ::  :: point    
+  | |-           ::  :: turnstyle          {{ tex \vdash }}
+  | |=           ::  :: turnstyle_doub     {{ tex \models }}
+  | |-ty         ::  :: turnstyle_ty       {{ tex \vdash_{\widehat{\texttt{ty} } } }}
+  | |-dty        ::  :: turnstyle_dty      {{ tex \vdash_\texttt{ty} }}
+  | |-           ::  :: vdash              {{ tex \vdash }}
+  | ||-          ::  :: Vdash              {{ tex \Vdash }}
+  | ||-mono      ::  :: Vdash_mono         {{ tex \Vdash_\texttt{mono} }}
+  | ||-poly      ::  :: Vdash_poly         {{ tex \Vdash_\texttt{poly} }}
+  | -|           ::  :: rev_turnstyle      {{ tex \dashv }}
+  | -||          ::  :: rev_turnstyle_doub {{ tex \VdashR }}
+  | sim          ::  :: sim                {{ tex \sim }}
+  | <=           ::  :: leq                {{ tex \leq }}
+  | <            ::  :: langle             {{ tex \langle }}
+  | >            ::  :: rangle             {{ tex \rangle }}
+  | embedin      ::  :: embedin            {{ tex \hookrightarrow }}
+  | dot          ::  :: composition        {{ tex \circ }}
+  | ++           ::  :: listappend         {{ tex \doubleplus  }}
+
+formula :: formula_ ::=
+  | judgement :: :: judgement
+
+% generalisation
+  | genDSch DSch2 DA = DSch1 :: :: genDSch
+    {{ tex \mathsf{gen}([[DSch2]], [[DA]])  = [[DSch1]] }}
+    {{ coq (generalize_DSch [[DSch2]] [[DA]] = [[DSch1]]) }}
+  | genSch Sch2 A = Sch1 :: :: genSch
+    {{ tex \mathsf{gen([[Sch2]], [[A]]) } = [[Sch1]] }}
+    {{ coq (generalize_Sch [[Sch2]] [[A]] AtomSetImpl.empty = [[Sch1]]) }}
+
+% equality
+  | Sch1 = Sch2 :: :: Sch_equality
+    {{ tex [[Sch1]] = [[Sch2]] }}
+    {{ coq ([[Sch1]] = [[Sch2]]) }}
+  | Env1 = Env2 :: :: Env_equality
+    {{ tex [[Env1]] = [[Env2]] }}
+    {{ coq ([[Env1]] = [[Env2]]) }}
+
+% declarative membership
+  | dskA elem DEnv :: :: dskvar_elem_DEnv
+    {{ tex [[dskA]] \in [[DEnv]] }}
+    {{ coq ([[dskA]] `in` (DEnv_dskvars [[DEnv]]) ) }}
+  | dskA notelem DEnv :: :: dskvar_notelem_DEnv
+    {{ tex [[dskA]] \not\in [[DEnv]] }}
+    {{ coq ([[dskA]] `notin` (DEnv_dskvars [[DEnv]]) ) }}
+%
+  | x : DSch elem DEnv :: :: termvar_elem_DEnv
+    {{ tex [[x]] : [[DSch]] \not\in [[DEnv]] }}
+    {{ coq (DSchPSI.In ([[x]],[[DSch]]) (DEnv_bindings [[DEnv]]) ) }}
+
+% algorithmic membership
+  | skA elem Env :: :: skvar_elem_Env
+    {{ tex [[skA]] \in [[Env]] }}
+    {{ coq ([[skA]] `in` (Env_skvars [[Env]]) ) }}
+%
+  | exA elem Env :: :: exvar_elem_Env
+    {{ tex [[exA]] \in [[Env]] }}
+    {{ coq ([[exA]] `in` (Env_exvars [[Env]]) ) }}
+  | exA fresh Env :: :: exvar_fresh_Env
+    {{ tex [[exA]] \# [[Env]] }}
+    {{ coq ([[exA]] `in` (Env_Obj_exvars [[Env]]) -> False ) }}
+%
+  | x : Sch elem Env :: :: termvar_elem_Env
+    {{ tex [[x]] : [[Sch]] \in [[Env]] }}
+    {{ coq (In ([[x]],[[Sch]]) (Env_bindings [[Env]]) ) }}
+%
+  | exA notin fv( Ty ) :: :: exa_notin_fv
+    {{ tex [[exA]] \not\in fv_{ \widehat{\alpha} }([[Ty]]) }}
+    {{ coq ([[exA]] `notin` (free_exvars_Ty [[Ty]]) ) }}
+% embed
+  | DSch embedin Sch         ::   :: Embed
+    {{ coq ( [[Sch]] = emb_Sch [[DSch]] ) }}
+
+% nolc
+  | nolc DSch                 ::   :: nolcDSch
+    {{ coq True }} {{ tex \vspace{-1em} }}
+  | nolc Sch                  ::   :: nolcSch
+    {{ coq True }} {{ tex \vspace{-1em} }}
+  | nolc DObj                 ::   :: nolcDObj
+    {{ coq True }} {{ tex \vspace{-1em} }}
+  | nolc Obj                  ::   :: nolcObj
+    {{ coq True }} {{ tex \vspace{-1em} }}
+  | nolc DEnv                 ::   :: nolcDEnv
+    {{ coq True }} {{ tex \vspace{-1em} }}
+  | nolc Env                  ::   :: nolcEnv
+    {{ coq True }} {{ tex \vspace{-1em} }}
+
+
+embed
+{{ tex \newpage }}
+
+embed
+{{ coq
+(*
+with DGen : DEnv -> e -> DSch -> Prop :=    (* defn DGen *)
+ | DGenGen : forall (L:vars) (DEnv5:DEnv) (e5:e) (DSch5:DSch) (DTy5:DTy)
+     (MON: (forall da, AtomSetImpl.disjoint (varl da) L
+                -> Mon ( DEnv_DA  DEnv5   da  )  e5 DTy5
+                /\ generalize_DSch  (DS_Mono DTy5)   da  =  DSch5)),
+     DGen DEnv5 e5 DSch5
+*)
+
+Definition DEnv_DA : DEnv -> list dskvar -> DEnv := fold_right (flip DEnv_DSkol).
+
+Definition oneDS dskA   : DEnv := DEnv_DSkol DEnv_Empty dskA.
+Definition oneDA DA     : DEnv := DEnv_DA    DEnv_Empty DA.
+Definition oneDX x dsch : DEnv := DEnv_DVar  DEnv_Empty x dsch.
+Definition oneDO dobj   : DEnv := DEnv_DObj  DEnv_Empty dobj.
+
+Definition oneS skA   : Env := Env_Skol Env_Empty skA.
+Definition oneA A     : Env := Env_A    Env_Empty A.
+Definition oneX x sch : Env := Env_Var  Env_Empty x sch.
+Definition oneO obj   : Env := Env_Obj   Env_Empty obj.
+
+(*** Interface *)
+Class SetProps (A : Type) :=
+(* If you extend this, remember to extend rewr_setprops*)
+  { SEqual     : A -> A -> Prop
+  ; SSubset    : A -> A -> Prop
+  ; Sunion     : A -> A -> A
+  ; Sempty     : A
+  ; Selt       : Type
+  ; Ssingleton : Selt -> A
+  ; SIn        : Selt -> A -> Prop
+  }.
+
+#[export] Hint Extern 1 (SEqual     _ _) => simpl SEqual     : core.
+#[export] Hint Extern 1 (SSubset    _ _) => simpl SSubset    : core.
+#[export] Hint Extern 1 (Sunion     _ _) => simpl Sunion     : core.
+#[export] Hint Extern 1 (Sempty        ) => simpl Sempty     : core.
+#[export] Hint Extern 1 (Selt          ) => simpl Selt       : core.
+#[export] Hint Extern 1 (Ssingleton _  ) => simpl Ssingleton : core.
+#[export] Hint Extern 1 (SIn        _ _) => simpl SIn        : core.
+
+(*** Declarative *)
+(** DTy *)
+Module DecidableDTy <: Coq.Structures.DecidableType.DecidableType.
+
+  Definition t := DTy.
+  Definition eq : t -> t -> Prop := @Logic.eq t.
+
+  Definition eq_refl  := @Logic.eq_refl  DTy.
+  Definition eq_sym   := @Logic.eq_sym   DTy.
+  Definition eq_trans := @Logic.eq_trans DTy.
+
+  Definition eq_dec    := eq_DTy.
+End DecidableDTy.
+
+Module Import DTySI : WSfun DecidableDTy := FSetWeakList.Make DecidableDTy.
+Notation DTyS := DTySI.t.
+Module Import DTySD := WDecide_fun DecidableDTy DTySI.
+
+(** DSch *)
+Module DecidableDSch <: Coq.Structures.DecidableType.DecidableType.
+
+  Definition t := DSch.
+  Definition eq : t -> t -> Prop := @Logic.eq t.
+
+  Definition eq_refl  := @Logic.eq_refl  DSch.
+  Definition eq_sym   := @Logic.eq_sym   DSch.
+  Definition eq_trans := @Logic.eq_trans DSch.
+
+  Definition eq_dec    := eq_DSch.
+End DecidableDSch.
+
+Module Import DSchSI : WSfun DecidableDSch := FSetWeakList.Make DecidableDSch.
+Notation DSchS := DSchSI.t.
+Module Import DSchSD := WDecide_fun DecidableDSch DSchSI.
+
+(** Pair with DTy *)
+Definition eq_VarDTyDeciablePair : forall (x y : atom * DTy), {x = y} + {x <> y}.
+Proof.
+  intros. destruct x, y.
+  destruct (Atom.eq_dec a a0). 2:right; congruence.
+  destruct (eq_DTy d d0). 2:right; congruence.
+  crush.
+Qed.
+
+Module DecidableDTyPair <: Coq.Structures.DecidableType.DecidableType.
+  Definition t := (atom * DTy).
+  Definition eq : t -> t -> Prop := @Logic.eq t.
+
+  Definition eq_refl  := @Logic.eq_refl  t.
+  Definition eq_sym   := @Logic.eq_sym   t.
+  Definition eq_trans := @Logic.eq_trans t.
+
+  Definition eq_dec    := eq_VarDTyDeciablePair.
+End DecidableDTyPair.
+
+Module Import DTyPSI : WSfun DecidableDTyPair := FSetWeakList.Make DecidableDTyPair.
+Notation DTyPS := DTyPSI.t.
+Module Import DTyPSD := WDecide_fun DecidableDTyPair DTyPSI.
+
+(** Pair with DSch *)
+Definition eq_VarDSchDeciablePair : forall (x y : atom * DSch), {x = y} + {x <> y}.
+Proof.
+  intros. destruct x, y.
+  destruct (Atom.eq_dec a a0). 2:right; congruence.
+  destruct (eq_DSch d d0). 2:right; congruence.
+  crush.
+Qed.
+
+Module DecidableDSchPair <: Coq.Structures.DecidableType.DecidableType.
+  Definition t := (termvar * DSch).
+  Definition eq : t -> t -> Prop := @Logic.eq t.
+
+  Definition eq_refl  := @Logic.eq_refl  t.
+  Definition eq_sym   := @Logic.eq_sym   t.
+  Definition eq_trans := @Logic.eq_trans t.
+
+  Definition eq_dec    := eq_VarDSchDeciablePair.
+End DecidableDSchPair.
+
+Module Import DSchPSI : WSfun DecidableDSchPair := FSetWeakList.Make DecidableDSchPair.
+Notation DSchPS := DSchPSI.t.
+Module Import DSchPSD := WDecide_fun DecidableDSchPair DSchPSI.
+
+(*** Algorithmic *)
+(** DTy *)
+Module DecidableTy <: Coq.Structures.DecidableType.DecidableType.
+
+  Definition t := Ty.
+  Definition eq : t -> t -> Prop := @Logic.eq t.
+
+  Definition eq_refl  := @Logic.eq_refl  Ty.
+  Definition eq_sym   := @Logic.eq_sym   Ty.
+  Definition eq_trans := @Logic.eq_trans Ty.
+
+  Definition eq_dec    := eq_Ty.
+End DecidableTy.
+
+Module Import TySI : WSfun DecidableTy := FSetWeakList.Make DecidableTy.
+Notation TyS := TySI.t.
+Module Import TySD := WDecide_fun DecidableTy TySI.
+
+(** Sch *)
+Module DecidableSch <: Coq.Structures.DecidableType.DecidableType.
+
+  Definition t := Sch.
+  Definition eq : t -> t -> Prop := @Logic.eq t.
+
+  Definition eq_refl  := @Logic.eq_refl  Sch.
+  Definition eq_sym   := @Logic.eq_sym   Sch.
+  Definition eq_trans := @Logic.eq_trans Sch.
+
+  Definition eq_dec    := eq_Sch.
+End DecidableSch.
+
+Module Import SchSI : WSfun DecidableSch := FSetWeakList.Make DecidableSch.
+Notation SchS := SchSI.t.
+Module Import SchSD := WDecide_fun DecidableSch SchSI.
+
+(** Pair with Ty *)
+Definition eq_VarTyDeciablePair : forall (x y : atom * Ty), {x = y} + {x <> y}.
+Proof.
+  intros. destruct x, y.
+  destruct (Atom.eq_dec a a0). 2:right; congruence.
+  destruct (eq_Ty t0 t1). 2:right; congruence.
+  crush.
+Qed.
+
+Module DecidableTyPair <: Coq.Structures.DecidableType.DecidableType.
+  Definition t := (atom * Ty).
+  Definition eq : t -> t -> Prop := @Logic.eq t.
+
+  Definition eq_refl  := @Logic.eq_refl  t.
+  Definition eq_sym   := @Logic.eq_sym   t.
+  Definition eq_trans := @Logic.eq_trans t.
+
+  Definition eq_dec    := eq_VarTyDeciablePair.
+End DecidableTyPair.
+
+Module Import TyPSI : WSfun DecidableTyPair := FSetWeakList.Make DecidableTyPair.
+Notation TyPS := TyPSI.t.
+Module Import TyPSD := WDecide_fun DecidableTyPair TyPSI.
+
+(* Pair with Sch *)
+Definition eq_VarSchDeciablePair : forall (x y : atom * Sch), {x = y} + {x <> y}.
+Proof.
+  intros. destruct x, y.
+  destruct (Atom.eq_dec a a0). 2:right; congruence.
+  destruct (eq_Sch s s0). 2:right; congruence.
+  crush.
+Qed.
+
+Module DecidableSchPair <: Coq.Structures.DecidableType.DecidableType.
+  Definition t := (atom * Sch).
+  Definition eq : t -> t -> Prop := @Logic.eq t.
+
+  Definition eq_refl  := @Logic.eq_refl  t.
+  Definition eq_sym   := @Logic.eq_sym   t.
+  Definition eq_trans := @Logic.eq_trans t.
+
+  Definition eq_dec    := eq_VarSchDeciablePair.
+End DecidableSchPair.
+
+Module Import SchPSI : WSfun DecidableSchPair := FSetWeakList.Make DecidableSchPair.
+Notation SchPS := SchPSI.t.
+Module Import SchPSD := WDecide_fun DecidableSchPair SchPSI.
+
+(*** Instances *)
+(** Atoms *)
+#[global] Instance Atoms_SetProps : SetProps vars :=
+  { SEqual     := AtomSetImpl.Equal
+  ; SSubset    := AtomSetImpl.Subset
+  ; Sunion     := AtomSetImpl.union
+  ; Sempty     := AtomSetImpl.empty
+  ; Selt       := atom
+  ; Ssingleton := AtomSetImpl.singleton
+  ; SIn        := AtomSetImpl.In
+  }.
+
+(** Declarative *)
+
+(* DTy *)
+#[global] Instance DTyS_SetProps : SetProps DTyS :=
+  { SEqual     := DTySI.Equal
+  ; SSubset    := DTySI.Subset
+  ; Sunion     := DTySI.union
+  ; Sempty     := DTySI.empty
+  ; Selt       := DTySI.elt
+  ; Ssingleton := DTySI.singleton
+  ; SIn        := DTySI.In
+  }.
+
+(* DSch *)
+#[global] Instance DSchS_SetProps : SetProps DSchS :=
+  { SEqual     := DSchSI.Equal
+  ; SSubset    := DSchSI.Subset
+  ; Sunion     := DSchSI.union
+  ; Sempty     := DSchSI.empty
+  ; Selt       := DSchSI.elt
+  ; Ssingleton := DSchSI.singleton
+  ; SIn        := DSchSI.In
+  }.
+
+(* Pair with DTy *)
+#[global] Instance DTyPS_SetProps : SetProps DTyPS :=
+  { SEqual     := DTyPSI.Equal
+  ; SSubset    := DTyPSI.Subset
+  ; Sunion     := DTyPSI.union
+  ; Sempty     := DTyPSI.empty
+  ; Selt       := DTyPSI.elt
+  ; Ssingleton := DTyPSI.singleton
+  ; SIn        := DTyPSI.In
+  }.
+
+(* Pair with DSch *)
+#[global] Instance DSchPS_SetProps : SetProps DSchPS :=
+  { SEqual     := DSchPSI.Equal
+  ; SSubset    := DSchPSI.Subset
+  ; Sunion     := DSchPSI.union
+  ; Sempty     := DSchPSI.empty
+  ; Selt       := DSchPSI.elt
+  ; Ssingleton := DSchPSI.singleton
+  ; SIn        := DSchPSI.In
+  }.
+
+(** Algorithmic *)
+
+(* Ty *)
+#[global] Instance TyS_SetProps : SetProps TyS :=
+  { SEqual     := TySI.Equal
+  ; SSubset    := TySI.Subset
+  ; Sunion     := TySI.union
+  ; Sempty     := TySI.empty
+  ; Selt       := TySI.elt
+  ; Ssingleton := TySI.singleton
+  ; SIn        := TySI.In
+  }.
+
+(* Sch *)
+#[global] Instance SchS_SetProps : SetProps SchS :=
+  { SEqual     := SchSI.Equal
+  ; SSubset    := SchSI.Subset
+  ; Sunion     := SchSI.union
+  ; Sempty     := SchSI.empty
+  ; Selt       := SchSI.elt
+  ; Ssingleton := SchSI.singleton
+  ; SIn        := SchSI.In
+  }.
+
+(* Pair with Ty *)
+#[global] Instance TyPS_SetProps : SetProps TyPS :=
+  { SEqual     := TyPSI.Equal
+  ; SSubset    := TyPSI.Subset
+  ; Sunion     := TyPSI.union
+  ; Sempty     := TyPSI.empty
+  ; Selt       := TyPSI.elt
+  ; Ssingleton := TyPSI.singleton
+  ; SIn        := TyPSI.In
+  }.
+
+(* Pair with Sch *)
+#[global] Instance SchPS_SetProps : SetProps SchPS :=
+  { SEqual     := SchPSI.Equal
+  ; SSubset    := SchPSI.Subset
+  ; Sunion     := SchPSI.union
+  ; Sempty     := SchPSI.empty
+  ; Selt       := SchPSI.elt
+  ; Ssingleton := SchPSI.singleton
+  ; SIn        := SchPSI.In
+  }.
+
+(*** Notations *)
+Notation "E ⟪=⟫ F" :=
+  (SEqual E F)
+  (at level 70, no associativity).
+
+Notation "E ⟪<=⟫ F" :=
+  (SSubset E F)
+  (at level 70, no associativity).
+
+Notation "⟪⟫" :=
+  (Sempty).
+
+Notation "⟪⟪  x  ⟫⟫" :=
+  (Ssingleton x).
+
+Notation "E ∪ F" :=
+  (Sunion E F)
+  (at level 65, right associativity).
+
+(** Declarative *)
+
+(* DTy *)
+Declare Scope DTyS_scope.
+Bind Scope DTyS_scope with DTyS.
+Notation "A \u B" := (DTySI.union A B  ) : DTyS_scope.
+Notation "{}"     := (DTySI.empty      ) : DTyS_scope.
+Notation "{ A }"  := (DTySI.singleton A) : DTyS_scope.
+
+(* DSch *)
+Declare Scope DSchS_scope.
+Bind Scope DSchS_scope with DSchS.
+Notation "A \u B" := (DSchSI.union A B  ) : DSchS_scope.
+Notation "{}"     := (DSchSI.empty      ) : DSchS_scope.
+Notation "{ A }"  := (DSchSI.singleton A) : DSchS_scope.
+
+(* Pair with DTy *)
+Declare Scope DTyPS_scope.
+Bind Scope DTyPS_scope with DTyPS.
+Notation "A \u B" := (DTyPSI.union A B  ) : DTyPS_scope.
+Notation "{}"     := (DTyPSI.empty      ) : DTyPS_scope.
+Notation "{ A }"  := (DTyPSI.singleton A) : DTyPS_scope.
+
+(* Pair with DSch *)
+Declare Scope DSchPS_scope.
+Bind Scope DSchPS_scope with DSchPS.
+Notation "A \u B" := (DSchPSI.union A B  ) : DSchPS_scope.
+Notation "{}"     := (DSchPSI.empty      ) : DSchPS_scope.
+Notation "{ A }"  := (DSchPSI.singleton A) : DSchPS_scope.
+
+(** Algorithmic *)
+
+(* Ty *)
+Declare Scope TyS_scope.
+Bind Scope TyS_scope with TyS.
+Notation "A \u B" := (TySI.union A B  ) : TyS_scope.
+Notation "{}"     := (TySI.empty      ) : TyS_scope.
+Notation "{ A }"  := (TySI.singleton A) : TyS_scope.
+
+(* Sch *)
+Declare Scope SchS_scope.
+Bind Scope SchS_scope with SchS.
+Notation "A \u B" := (SchSI.union A B  ) : SchS_scope.
+Notation "{}"     := (SchSI.empty      ) : SchS_scope.
+Notation "{ A }"  := (SchSI.singleton A) : SchS_scope.
+
+(* Pair with Ty *)
+Declare Scope TyPS_scope.
+Bind Scope TyPS_scope with TyPS.
+Notation "A \u B" := (TyPSI.union A B  ) : TyPS_scope.
+Notation "{}"     := (TyPSI.empty      ) : TyPS_scope.
+Notation "{ A }"  := (TyPSI.singleton A) : TyPS_scope.
+
+(* Pair with Sch *)
+Declare Scope SchPS_scope.
+Bind Scope SchPS_scope with SchPS.
+Notation "A \u B" := (SchPSI.union A B  ) : SchPS_scope.
+Notation "{}"     := (SchPSI.empty      ) : SchPS_scope.
+Notation "{ A }"  := (SchPSI.singleton A) : SchPS_scope.
+
+(*** Manual defs *)
+Fixpoint emb_Ty (dty : DTy) : Ty :=
+  match dty with
+  | (DT_SkVar_b n    ) => T_SkVar_b n
+  | (DT_SkVar_f skA  ) => T_SkVar_f skA
+  | (DT_Unit         ) => T_Unit
+  | (DT_Fun dty1 dty2) => T_Fun (emb_Ty dty1) (emb_Ty dty2)
+end.
+
+Fixpoint emb_Sch (dsch : DSch) : Sch :=
+  match dsch with
+  | (DS_Mono   dty ) => S_Mono   (emb_Ty dty)
+  | (DS_Forall dsch) => S_Forall (emb_Sch dsch)
+end.
+
+Fixpoint generalize_DSch (dsch : DSch) (da : DA) : DSch :=
+  match da with
+  | nil => dsch
+  | cons dskA da' =>
+      let dsch := generalize_DSch dsch da' in
+      DS_Forall (close_DSch_wrt_DTy dskA dsch)
+end.
+
+Fixpoint generalize_Sch (sch : Sch) (a : A) (L :  vars) : Sch :=
+  match a with
+  | nil => sch
+  | cons exA a' =>
+      let sch' := generalize_Sch sch a' L in
+      let fr   := proj1_sig (atom_fresh (free_skvars_Sch sch' \u L)) in
+      S_Forall (close_Sch_wrt_Ty fr (subst_exvar_Sch (T_SkVar_f fr) exA sch'))
+end.
+
+(*** eq lemmas *)
+Lemma eq_A: forall (x y : list exvar), {x = y} + {x <> y}.
+Proof.
+  decide equality; auto with ott_coq_equality arith.
+Defined.
+#[export] Hint Resolve eq_A : ott_coq_equality.
+Lemma eq_Obj: forall (x y : Obj), {x = y} + {x <> y}.
+Proof.
+  decide equality; auto with ott_coq_equality arith.
+Defined.
+#[export] Hint Resolve eq_Obj : ott_coq_equality.
+Lemma eq_Env: forall (x y : Env), {x = y} + {x <> y}.
+Proof.
+  decide equality; auto with ott_coq_equality arith.
+Defined.
+#[export] Hint Resolve eq_Env : ott_coq_equality.
+
+(*** List stuff *)
+(** DEnv to Set *)
+Module List_to_Set (E : DecidableType) (Import M : WSfun E).
+  Module Import Dec := WDecide_fun E M.
+  Section List_to_Set.
+    Context (elt : Type).
+    Variable f : elt -> t.
+    Definition List_to_Set : list elt -> t :=
+      fold_right (union ∘ f) empty.
+    (* Simplifications *)
+    Theorem List_to_Set_app : forall (l1 l2 : list elt),
+        List_to_Set (l1 ++ l2) [=] union (List_to_Set l1) (List_to_Set l2).
+    Proof. intros; induction l1; simpl; autorewrite with core; fsetdec. Qed.
+    Theorem List_to_Set_cons : forall (l : list elt) (x : elt),
+        List_to_Set (x :: l) [=] union (List_to_Set l) (f x).
+    Proof. intros. simpl; autorewrite with core; fsetdec. Qed.
+    Theorem List_to_Set_one : forall (x : elt),
+        List_to_Set (one x) [=] f x.
+    Proof. intros. simpl; autorewrite with core; fsetdec. Qed.
+    (* Facts *)
+    Corollary List_to_Set_app_symm : forall (l1 l2 : list elt),
+        List_to_Set (l1 ++ l2) [=] List_to_Set (l2 ++ l1).
+    Proof. intros. do 2 rewrite List_to_Set_app. fsetdec. Qed.
+  End List_to_Set.
+  #[export] Hint Rewrite List_to_Set_app : List_to_Set.
+  #[export] Hint Rewrite List_to_Set_cons : List_to_Set.
+  #[export] Hint Rewrite List_to_Set_one : List_to_Set.
+  #[export] Hint Resolve List_to_Set_app : core List_to_Set.
+  #[export] Hint Resolve List_to_Set_cons : core List_to_Set.
+  #[export] Hint Resolve List_to_Set_one : core List_to_Set.
+  #[export] Hint Resolve List_to_Set_app_symm : core List_to_Set.
+End List_to_Set.
+
+Module Export List_to_Atoms := List_to_Set Atom AtomSetImpl.
+Module Export List_to_DTyS := List_to_Set DecidableDTy DTySI.
+Module Export List_to_DTySP := List_to_Set DecidableDTyPair DTyPSI.
+
+Definition varl : A -> vars :=
+  List_to_Atoms.List_to_Set atom (AtomSetImpl.singleton).
+
+Definition DSub_codom : DSub -> DTyS :=
+  List_to_DTyS.List_to_Set (exvar * DTy) (DTySI.singleton ∘ snd).
+#[export] Hint Extern 2 =>
+  match goal with
+      | [ |- context[DSub_codom _] ] => unfold DSub_codom
+    end : core.
+
+Definition DSub_bindings : DSub -> DTyPS :=
+  List_to_DTySP.List_to_Set (atom * DTy) (DTyPSI.singleton).
+#[export] Hint Extern 2 =>
+  match goal with
+      | [ |- context[DSub_bindings _] ] => unfold DSub_bindings
+    end : core.
+
+Definition DSub_dom : DSub -> vars :=
+  List_to_Atoms.List_to_Set (exvar * DTy) (AtomSetImpl.singleton ∘ fst).
+#[export] Hint Extern 2 =>
+  match goal with
+      | [ |- context[DSub_dom _] ] => unfold DSub_dom
+    end : core.
+
+(** Sub stuff *)
+Definition DSub_to_A : DSub -> A :=
+  fold_right (cons ∘ fst) nil.
+
+Definition DSub_codom_dskvars : DSub -> atoms :=
+  List_to_Atoms.List_to_Set (exvar * DTy) (free_dskvars_DTy ∘ snd).
+#[export] Hint Extern 2 =>
+  match goal with
+      | [ |- context[DSub_codom_dskvars _] ] => unfold DSub_codom_dskvars
+    end : core.
+
+Definition DSub_app_t : Ty -> DSub -> Ty := (fold_right (uncurry (flip (subst_exvar_Ty ∘ emb_Ty)))).
+
+Fixpoint DSub_app (sch : Sch) (dsub : DSub) : Sch :=
+  match sch with
+  | S_Mono   t   => S_Mono   (DSub_app_t t   dsub)
+  | S_Forall sch => S_Forall (DSub_app   sch dsub)
+end.
+
+Definition Sub_app_t : Ty -> Sub -> Ty := (fold_right (uncurry (flip subst_exvar_Ty))).
+
+Fixpoint Sub_app (sch : Sch) (sub : Sub) : Sch :=
+  match sch with
+  | S_Mono   t   => S_Mono   (Sub_app_t t   sub)
+  | S_Forall sch => S_Forall (Sub_app   sch sub)
+end.
+
+Definition bimap_tup {X:Type} {Y:Type} (f:X->Y) (tup:(X*X)) : (Y*Y) :=
+  match tup with
+    | (x,y) => (f x, f y)
+  end.
+
+Definition subst_exvar_Eqs : Ty -> exvar -> Eqs -> Eqs :=
+  fun ty exA => Coq.Lists.List.map (bimap_tup (subst_exvar_Ty ty exA)).
+
+Definition Sub_app_Eqs : Eqs -> Sub -> Eqs :=
+  fold_right (uncurry (flip subst_exvar_Eqs)).
+
+Definition Sub_app_Env : Env -> Sub -> Env :=
+  fold_right (uncurry (flip subst_exvar_Env)).
+
+(*** Obj stuff *)
+Section Sec_fold_DObj.
+  Context {S : Type}.
+  Variable f : DA -> DSch -> S.
+
+  Definition fold_DObj (dobj : DObj) :=
+    match dobj with
+    | DObj_DSch a dsch => f a dsch
+  end.
+End Sec_fold_DObj.
+
+Section Sec_fold_Obj.
+  Context {S : Type}.
+  Variable f : A -> Sch -> S.
+
+  Definition fold_Obj (obj : Obj) :=
+    match obj with
+    | Obj_Sch a sch => f a sch
+  end.
+End Sec_fold_Obj.
+
+(*** Fold-based Defs *)
+(** DEnv fold *)
+Section Sec_DEnv_fold.
+  Context {S : Type}.
+  Variable s0     :                      S.
+  Variable f__dskol : S -> dskvar         -> S.
+  Variable f__var   : S -> termvar * DSch -> S.
+  Variable f__dobj  : S -> DObj           -> S.
+
+  Fixpoint DEnv_fold (denv:DEnv) : S :=
+    match denv with
+      | DEnv_Empty              => s0
+      | DEnv_DSkol denv' dskA   => f__dskol (DEnv_fold denv') dskA
+      | DEnv_DVar  denv' x dsch => f__var   (DEnv_fold denv') (x, dsch)
+      | DEnv_DObj  denv' dobj   => f__dobj  (DEnv_fold denv') dobj
+    end.
+End Sec_DEnv_fold.
+
+Definition DEnv_app : DEnv -> DEnv -> DEnv := fun denv1 =>
+  DEnv_fold denv1 DEnv_DSkol (fun denv => uncurry (DEnv_DVar denv)) DEnv_DObj.
+
+(** DEnv to Set *)
+Module DEnv_to_Set (E : DecidableType) (Import M : WSfun E).
+  Module Import Dec := WDecide_fun E M.
+
+  Section Denv_to_Set.
+    Variable f__a : dskvar         -> t.
+    Variable f__x : termvar * DSch -> t.
+    Variable f__o : DObj           -> t.
+
+    Definition DEnv_to_Set : DEnv -> t :=
+      DEnv_fold empty (flip (union ∘ f__a)) (flip (union ∘ f__x)) (flip (union ∘ f__o)).
+
+    Theorem DEnv_to_Set_app : forall (denv1 denv2 : DEnv),
+        DEnv_to_Set (DEnv_app denv1 denv2) [=] union (DEnv_to_Set denv1) (DEnv_to_Set denv2).
+    Proof. induction denv2; simpl; autorewrite with core; fsetdec. Qed.
+
+    Theorem DEnv_to_Set_s : forall (denv : DEnv) (dskA : dskvar),
+        DEnv_to_Set (DEnv_DSkol denv dskA) [=] union (DEnv_to_Set denv) (f__a dskA).
+    Proof. intros. simpl; autorewrite with core; fsetdec. Qed.
+
+    Theorem DEnv_to_Set_a : forall (denv : DEnv) (da : DA),
+        DEnv_to_Set (DEnv_DA denv da) [=] union (DEnv_to_Set denv) (fold_right (union ∘ f__a) empty da).
+    Proof. intros. induction da. fsetdec. simpl. autorewrite with core. fsetdec. Qed.
+
+    Theorem DEnv_to_Set_x : forall (denv : DEnv) (x : termvar) (dsch : DSch),
+        DEnv_to_Set (DEnv_DVar denv x dsch) [=] union (DEnv_to_Set denv) (f__x (x, dsch)).
+    Proof. intros. simpl; autorewrite with core; fsetdec. Qed.
+
+    Theorem DEnv_to_Set_o : forall (denv : DEnv) (dobj : DObj),
+        DEnv_to_Set (DEnv_DObj denv dobj) [=] union (DEnv_to_Set denv) (f__o dobj).
+    Proof. intros. simpl; autorewrite with core; fsetdec. Qed.
+
+    Theorem DEnv_to_Set_ones : forall (dskA : dskvar),
+        DEnv_to_Set (oneDS dskA) [=] f__a dskA.
+    Proof. intros. simpl; autorewrite with core; fsetdec. Qed.
+
+    Theorem DEnv_to_Set_onea : forall (da : DA),
+        DEnv_to_Set (oneDA da) [=] fold_right (union ∘ f__a) empty da.
+    Proof. intros. induction da. fsetdec. simpl. autorewrite with core. fsetdec. Qed.
+
+    Theorem DEnv_to_Set_onex : forall (x : termvar) (dsch : DSch),
+        DEnv_to_Set (oneDX x dsch) [=] f__x (x, dsch).
+    Proof. intros. simpl; autorewrite with core; fsetdec. Qed.
+
+    Theorem DEnv_to_Set_oneo : forall (dobj : DObj),
+        DEnv_to_Set (oneDO dobj) [=] f__o dobj.
+    Proof. intros. simpl; autorewrite with core; fsetdec. Qed.
+
+  End Denv_to_Set.
+  #[export] Hint Rewrite DEnv_to_Set_app : DEnv_to_Set.
+  #[export] Hint Rewrite DEnv_to_Set_s : DEnv_to_Set.
+  #[export] Hint Rewrite DEnv_to_Set_a : DEnv_to_Set.
+  #[export] Hint Rewrite DEnv_to_Set_x : DEnv_to_Set.
+  #[export] Hint Rewrite DEnv_to_Set_o : DEnv_to_Set.
+  #[export] Hint Rewrite DEnv_to_Set_ones : DEnv_to_Set.
+  #[export] Hint Rewrite DEnv_to_Set_onea : DEnv_to_Set.
+  #[export] Hint Rewrite DEnv_to_Set_onex : DEnv_to_Set.
+  #[export] Hint Rewrite DEnv_to_Set_oneo : DEnv_to_Set.
+
+  #[export] Hint Resolve DEnv_to_Set_app : core DEnv_to_Set.
+  #[export] Hint Resolve DEnv_to_Set_s : core DEnv_to_Set.
+  #[export] Hint Resolve DEnv_to_Set_a : core DEnv_to_Set.
+  #[export] Hint Resolve DEnv_to_Set_x : core DEnv_to_Set.
+  #[export] Hint Resolve DEnv_to_Set_o : core DEnv_to_Set.
+  #[export] Hint Resolve DEnv_to_Set_ones : core DEnv_to_Set.
+  #[export] Hint Resolve DEnv_to_Set_onea : core DEnv_to_Set.
+  #[export] Hint Resolve DEnv_to_Set_onex : core DEnv_to_Set.
+  #[export] Hint Resolve DEnv_to_Set_oneo : core DEnv_to_Set.
+
+  Theorem fold_empty_empty : forall (da : DA),
+      fold_right (union ∘ const empty) empty da [=] empty.
+  Proof. intros. induction da; crush. fsetdec. Qed.
+  #[export] Hint Rewrite fold_empty_empty : DEnv_to_Set.
+  #[export] Hint Resolve fold_empty_empty : core DEnv_to_Set.
+End DEnv_to_Set.
+
+Module Export DEnv_to_Atoms  := DEnv_to_Set Atom AtomSetImpl.
+Module Export DEnv_to_DSchPS := DEnv_to_Set DecidableDSchPair DSchPSI.
+Module Export DEnv_to_DSchS  := DEnv_to_Set DecidableDSch     DSchSI .
+
+Definition DEnv_dskvars : DEnv -> vars :=
+  DEnv_to_Atoms.DEnv_to_Set AtomSetImpl.singleton (const Sempty) (const Sempty).
+
+Definition DEnv_bindings : DEnv -> DSchPS :=
+  DEnv_to_DSchPS.DEnv_to_Set (const Sempty) DSchPSI.singleton (const Sempty).
+
+Definition DEnv_boundvars : DEnv -> vars :=
+  DEnv_to_Atoms.DEnv_to_Set (const Sempty) (AtomSetImpl.singleton ∘ fst) (const Sempty).
+
+Definition DEnv_DSchs : DEnv -> DSchS :=
+  DEnv_to_DSchS.DEnv_to_Set (const Sempty) (DSchSI.singleton ∘ snd) (const Sempty).
+
+(** Env fold *)
+Section Sec_Env_fold.
+  Context {S : Type}.
+  Variable s0     :                       S.
+  Variable f__skol  : S -> skvar           -> S.
+  Variable f__a     : S -> A               -> S.
+  Variable f__var   : S -> (termvar * Sch) -> S.
+  Variable f__obj   : S -> Obj             -> S.
+
+  Fixpoint Env_fold (env:Env) : S :=
+    match env with
+      | Env_Empty            => s0
+      | Env_Skol  env' skA   => f__skol (Env_fold env') skA
+      | Env_A     env' a     => f__a    (Env_fold env') a
+      | Env_Var   env' x sch => f__var  (Env_fold env') (x, sch)
+      | Env_Obj   env' obj   => f__obj  (Env_fold env') obj
+    end.
+End Sec_Env_fold.
+
+Definition Env_app : Env -> Env -> Env := fun env1 =>
+  Env_fold env1 Env_Skol Env_A (fun env => uncurry (Env_Var env)) Env_Obj.
+
+Definition Env_length : Env -> nat :=
+  Env_fold 0
+    (const ∘ (plus 1))
+    (const ∘ (plus 1))
+    (const ∘ (plus 1))
+    (const ∘ (plus 1)).
+
+(** Env to Set *)
+Module Env_to_Set (E : DecidableType) (Import M : WSfun E).
+  Module Import Dec := WDecide_fun E M.
+
+  Section Env_to_Set.
+
+    Variable f__s : skvar         -> t.
+    Variable f__a : A             -> t.
+    Variable f__x : termvar * Sch -> t.
+    Variable f__o : Obj           -> t.
+
+    Definition Env_to_Set : Env -> t :=
+      Env_fold empty (flip (union ∘ f__s)) (flip (union ∘ f__a)) (flip (union ∘ f__x)) (flip (union ∘ f__o)).
+
+    Theorem Env_to_Set_app : forall (env1 env2 : Env),
+        Env_to_Set (Env_app env1 env2) [=] union (Env_to_Set env1) (Env_to_Set env2).
+    Proof. induction env2; simpl; autorewrite with core; fsetdec. Qed.
+
+    Theorem Env_to_Set_s : forall (env : Env) (skA : skvar),
+        Env_to_Set (Env_Skol env skA) [=] union (Env_to_Set env) (f__s skA).
+    Proof. intros. simpl; autorewrite with core; fsetdec. Qed.
+
+    Theorem Env_to_Set_a : forall (env : Env) (a : A),
+        Env_to_Set (Env_A env a) [=] union (Env_to_Set env) (f__a a).
+    Proof. intros. simpl; autorewrite with core; fsetdec. Qed.
+
+    Theorem Env_to_Set_x : forall (env : Env) (x : termvar) (sch : Sch),
+        Env_to_Set (Env_Var env x sch) [=] union (Env_to_Set env) (f__x (x, sch)).
+    Proof. intros. simpl; autorewrite with core; fsetdec. Qed.
+
+    Theorem Env_to_Set_o : forall (env : Env) (obj : Obj),
+        Env_to_Set (Env_Obj env obj) [=] union (Env_to_Set env) (f__o obj).
+    Proof. intros. simpl; autorewrite with core; fsetdec. Qed.
+
+    Theorem Env_to_Set_ones : forall (skA : skvar),
+        Env_to_Set (oneS skA) [=] f__s skA.
+    Proof. intros. simpl; autorewrite with core; fsetdec. Qed.
+
+    Theorem Env_to_Set_onea : forall (a : A),
+        Env_to_Set (oneA a) [=] f__a a.
+    Proof. intros. simpl; autorewrite with core; fsetdec. Qed.
+
+    Theorem Env_to_Set_onex : forall (x : termvar) (sch : Sch),
+        Env_to_Set (oneX x  sch) [=] f__x (x, sch).
+    Proof. intros. simpl; autorewrite with core; fsetdec. Qed.
+
+    Theorem Env_to_Set_oneo : forall (obj : Obj),
+        Env_to_Set (oneO obj) [=] f__o obj.
+    Proof. intros. simpl; autorewrite with core; fsetdec. Qed.
+
+    (** Gives problems, don't know why *)
+    (* Theorem Env_to_Set_empty : *)
+    (*     Env_to_Set Env_Empty [=] empty. *)
+    (* Proof. intros. simpl. reflexivity. Qed. *)
+  End Env_to_Set.
+  #[export] Hint Rewrite Env_to_Set_app : Env_to_Set.
+  #[export] Hint Rewrite Env_to_Set_s : Env_to_Set.
+  #[export] Hint Rewrite Env_to_Set_a : Env_to_Set.
+  #[export] Hint Rewrite Env_to_Set_x : Env_to_Set.
+  #[export] Hint Rewrite Env_to_Set_o : Env_to_Set.
+  #[export] Hint Rewrite Env_to_Set_ones : Env_to_Set.
+  #[export] Hint Rewrite Env_to_Set_onea : Env_to_Set.
+  #[export] Hint Rewrite Env_to_Set_onex : Env_to_Set.
+  #[export] Hint Rewrite Env_to_Set_oneo : Env_to_Set.
+  (* #[export] Hint Rewrite Env_to_Set_empty : Env_to_Set. *)
+
+  #[export] Hint Resolve Env_to_Set_app : core Env_to_Set.
+  #[export] Hint Resolve Env_to_Set_s : core Env_to_Set.
+  #[export] Hint Resolve Env_to_Set_a : core Env_to_Set.
+  #[export] Hint Resolve Env_to_Set_x : core Env_to_Set.
+  #[export] Hint Resolve Env_to_Set_o : core Env_to_Set.
+  #[export] Hint Resolve Env_to_Set_ones : core Env_to_Set.
+  #[export] Hint Resolve Env_to_Set_onea : core Env_to_Set.
+  #[export] Hint Resolve Env_to_Set_onex : core Env_to_Set.
+  #[export] Hint Resolve Env_to_Set_oneo : core Env_to_Set.
+  (* #[export] Hint Resolve Env_to_Set_empty : core Env_to_Set. *)
+End Env_to_Set.
+
+Module Export Env_to_Atoms := Env_to_Set Atom AtomSetImpl.
+Module Export Env_to_SchPS := Env_to_Set DecidableSchPair SchPSI.
+Module Export Env_to_SchS  := Env_to_Set DecidableSch SchSI.
+
+Definition Env_skvars : Env -> vars :=
+  Env_to_Atoms.Env_to_Set AtomSetImpl.singleton (const Sempty) (const Sempty) (const Sempty).
+
+Definition Env_exvars : Env -> vars :=
+  Env_to_Atoms.Env_to_Set (const Sempty) varl (const Sempty) (const Sempty).
+
+Definition Obj_exvars : Obj -> vars :=
+  fold_Obj (flip (const varl)).
+
+Definition Obj_to_Sch : Obj -> Sch :=
+  fold_Obj (flip const).
+
+Definition Env_Obj_exvars : Env -> vars :=
+  Env_to_Atoms.Env_to_Set (const Sempty) varl (const Sempty) Obj_exvars.
+
+Definition Env_bindings : Env -> SchPS :=
+  Env_to_SchPS.Env_to_Set (const Sempty) (const Sempty) SchPSI.singleton (const Sempty).
+
+Definition Env_boundvars : Env -> vars :=
+  Env_to_Atoms.Env_to_Set (const Sempty) (const Sempty) (AtomSetImpl.singleton ∘ fst) (const Sempty).
+
+Definition Env_Schs : Env -> SchS :=
+  Env_to_SchS.Env_to_Set (const Sempty) (const Sempty) (SchSI.singleton ∘ snd) (const Sempty).
+
+Definition Env_Obj_Schs : Env -> SchS :=
+  Env_to_SchS.Env_to_Set (const Sempty) (const Sempty) (SchSI.singleton ∘ snd) (SchSI.singleton ∘ Obj_to_Sch).
+
+(** Env, direct recursion *)
+Fixpoint Env_drop (n : nat) (env : Env): Env :=
+  match n with
+    | 0     => env
+    | (S n) =>
+        match env with
+          | (Env_Empty        ) => Env_Empty
+          | ( (Env_Skol env' _  )
+            | (Env_A    env' _  )
+            | (Env_Var  env' _ _)
+            | (Env_Obj  env' _  )
+            ) => Env_drop n env'
+        end
+  end.
+}}
+
+defns DecHelpers :: '' ::=
+
+  defn DA # DEnv
+    :: :: DFrA :: 'DFrA'
+    {{ com DA freshness }}
+    by
+
+      nolc DEnv
+      ------------  :: Nil
+      bullet # DEnv
+
+
+      DA # DEnv [[:DFRA]]
+      dskA notelem DEnv; DA [[:DFR]]
+      ----------------  :: Cons
+      DA; dskA # DEnv
+
+defns DecTyping :: '' ::=
+
+  defn DEnv ||-mono e : DTy
+    :: :: TmMon :: 'Tm'
+    {{ com Mono Term Typing }}
+    by
+
+      x : DSch elem DEnv [[:IN]]
+      DEnv ||- DSch <= DTy [[:SS]]
+      --------------------  :: Var
+      DEnv ||-mono x : DTy
+
+
+      nolc DEnv
+      ------------------------  :: Unit
+      DEnv ||-mono unit : Unit
+
+
+      DEnv |-dty DTy1 [[:WFDTY]]
+      DEnv; x : DTy1 ||-mono e : DTy2 [[:MON]]
+      -----------------------------------  :: Abs
+      DEnv ||-mono \ x . e : DTy1 -> DTy2
+
+
+      DEnv ||-mono e1 : DTy1 -> DTy2 [[:MONe1]]
+      DEnv ||-mono e2 : DTy1 [[:MONe2]]
+      ------------------------------  :: App
+      DEnv ||-mono e1 e2 : DTy2
+
+
+      DEnv ||-poly e1 : DSch [[:POL]]
+      DEnv; x : DSch ||-mono e2 : DTy [[:MON]]
+      ------------------------------------------  :: Let
+      DEnv ||-mono ( let x = e1 inlet e2 ) : DTy
+
+  defn DEnv ||-poly e : DSch
+    :: :: TmDGen :: 'Tm'
+    {{ com Poly Term Typing }}
+    by
+
+
+      DA # DEnv [[:FR]]
+      DEnv; DA ||-mono e : DTy [[:MON]]
+      genDSch DTy DA = DSch
+      ---------------------  :: Gen
+      DEnv ||-poly e : DSch
+
+  defn DEnv |-dty DSch
+    :: :: WfDTy :: 'WfDTy'
+    {{ com Dec Type Well-formedness }}
+    by
+
+      dskA elem DEnv [[:IN]]
+      ---------------  :: Sk
+      DEnv |-dty dskA
+
+
+      nolc DEnv
+      -------------  :: Unit
+      DEnv |-dty Unit
+
+
+      DEnv |-dty DTy1 [[:WFDTY1]]
+      DEnv |-dty DTy2 [[:WFDTY2]]
+      -------------------  :: Arr
+      DEnv |-dty DTy1 -> DTy2
+
+
+      DEnv; dskA |-dty DSch [[:WFDTY]]
+      -----------------------  :: Abs
+      DEnv |-dty forall dskA . DSch
+
+  defn wf ( DEnv )
+    :: :: WfDEnv :: 'WfDEnv'
+    {{ com Scoping/Typing Environment Well-formedness }}
+    {{ tex \texttt{wf}~([[DEnv]]) }}
+    by
+
+      ------------  :: Nil
+      wf( bullet )
+
+
+      % DA # DEnv [[:NIN]]
+      % wf( DEnv ) [[:WFDTY]]
+      % ---------------  :: DA
+      % wf( DEnv; DA )
+
+      wf( DEnv ) [[:WFD]]
+      dskA notelem DEnv [[:FR]]
+      ----------------  :: Sk
+      wf( DEnv; dskA )
+
+
+      wf( DEnv ) [[:WFD]]
+      DEnv |-dty DSch [[:WFDTY]]
+      --------------------  :: Sch
+      wf( DEnv; x : DSch )
+
+
+  defn DEnv ||- DSch1 <= DSch2
+    :: :: SubSump :: SubSump
+    {{ com Type subsumption }}
+    by
+
+      nolc DEnv
+      nolc DTy
+      ------------------  :: Mono
+      DEnv ||- DTy <= DTy
+
+
+      DEnv; dskA ||- DSch1 <= DSch2 [[:SS]]
+      ------------------------------------  :: Skol
+      DEnv ||- DSch1 <= forall dskA . DSch2
+
+
+      DEnv |-dty DTy1 [[:WFDTY]]
+      DEnv ||- [DTy1 / dskA] DSch <= DTy2 [[:SS]]
+      -----------------------------------  :: Inst
+      DEnv ||- forall dskA . DSch <= DTy2
+
+defns
+AFreshNess :: '' ::=
+    defn A # Env
+      :: :: FrA :: 'FrA'
+      {{ com A freshness }}
+      by
+
+      nolc Env
+      ------------  :: Nil
+      bullet # Env
+
+
+      A # Env [[:FRA]]
+      exA fresh Env; A [[:FR]]
+      ----------------  :: Cons
+      A; exA # Env
+
+defns
+AlgorithmicSystem :: '' ::=
+
+  defn Envin |- e : [ A ] Ty -| Envout
+    :: :: Inf :: 'Inf'
+    {{ com Type Inference }}
+    by
+
+      x : Sch elem Env [[:IN]]
+      Env |- Sch <= [A] Ty [[:INST]]
+      ------------------------  :: Var
+      Env |- x : [A] Ty -| Env
+
+
+      nolc Env
+      ----------------------------------  :: Unit
+      Env |- unit : [bullet] Unit -| Env
+
+
+      exA fresh Envin [[:FR]]
+      Envin; <exA>; x : exA |- e : [A2]Ty2 -| Envout; A1; x : Ty1 [[:INF]]
+      -----------------------------------------------------------  :: Abs
+      Envin |- \x.e : [A1 ++ A2] Ty1 -> Ty2 -| Envout
+
+
+      exB fresh Env2; (A1' ++ A2) [[:FR]]
+      Envin |- e1 : [A1] Ty -| Env1 [[:INFe1]]
+      Env1; {[A1] Ty} |- e2 : [A2] Ty1 -| Env2; {[A1'] Ty'} [[:INFe2]]
+      Env2; A1' ++ (A2; exB); {exB} |- <Ty' sim Ty1 -> exB> -| Envout; Aout; {Ty2} [[:UNI]]
+      -----------------------------------------------------------------------------------------------  :: App
+      Envin |- e1 e2 : [Aout] Ty2 -| Envout
+
+
+      Envin |- e1 : Sch -| Env [[:POL]]
+      Env ; x : Sch |- e2 : [A2]Ty2 -| Envout; x : Sch' [[:INF]]
+      --------------------------------------------------------------  :: Let
+      Envin |- let x = e1 inlet e2 : [A2] Ty2 -| Envout
+
+  defn Env1 |- e : Sch -| Env2
+    :: :: Gen :: 'Inf'
+    {{ com Generalization }}
+    by
+
+      Envin |- e : [A] Ty -| Envout [[:MON]]
+      genSch Ty A = Sch
+      -----------------------------------  :: Gen
+      Envin |- e : Sch -| Envout
+
+  defn Env |- Sch <= [ A ] Ty
+    :: :: Inst :: 'Inst'
+    {{ com Polymorhpic Type Instantiation }}
+    by
+
+      nolc Env
+      nolc Ty
+      ------------------------  :: Mono
+      Env |- Ty <= [bullet] Ty
+ 
+
+      exA fresh Env [[:FR]]
+      Env; <exA> |- [exA/skA] Sch <= [A] Ty [[:INST]]
+      --------------------------------------  :: Poly
+      Env |- forall skA . Sch <= [<exA> ++ A] Ty
+
+
+  defn Env1 |- Eqs -| Env2
+    :: :: U :: 'U'
+    {{ com Unification Algorithm }}
+    by
+
+      Envin |- Eqs -| Envout, Sub [[:Us]]
+      ----------------------------  :: U
+      Envin |- Eqs -| Envout
+
+  defn Envin |- Eqs -| Envout , Sub
+    :: :: Us :: 'Us'
+    {{ com Unification Algorithm with substutution }}
+    by
+
+      nolc Env
+      --------------------  :: Nil
+      Env |- bullet -| Env, bullet
+
+
+      Envin |- Eqs --> Env |- Eqs', Sub1 [[:UNI]]
+      Sub1 Env |- Sub1 Eqs' -| Envout, Sub2 [[:USS]]
+      ----------------------------  :: Cons
+      Envin |- Eqs -| Envout, Sub1 + Sub2
+
+  defn Env1 |- Eqs1 --> Env2 |- Eqs2 , Sub
+    :: :: Uss :: 'Uss'
+    {{ com Unification Algorithm (Single-step) }} {{ tex \begin{array}{l} [[Env1]] \vdash [[Eqs1]] \rightarrow \\ [[Env2]] \vdash [[Eqs2]], [[Sub]] \end{array} }}
+    by
+
+      nolc Env
+      ----------------------------------------  :: Unit
+      Env |- Unit sim Unit; Eqs --> Env |- Eqs, bullet
+
+
+      nolc Env
+      --------------------------------------  :: ExA
+      Env |- exA sim exA; Eqs --> Env |- Eqs, bullet
+
+
+      nolc Env
+      nolc Ty1
+      nolc Ty2
+      nolc Ty3
+      nolc Ty4
+      ----------------------------------------------------------------------------------  :: DistrArr
+      Env |- (Ty1 -> Ty2) sim (Ty3 -> Ty4); Eqs --> Env |- Ty1 sim Ty3; Ty2 sim Ty4; Eqs, bullet
+
+      nolc Ty1
+      nolc Ty2
+      nolc Env2
+      exA notin fv(Ty1 -> Ty2)
+      <exA1; exA2> # Env1; (A1; exA ++ A2) + Env2 [[:FR]]
+      ----------------------------------------------------------------------------------------  :: SplitL
+      Env1; (A1; exA ++ A2) + Env2 |- exA sim (Ty1 -> Ty2); Eqs --> Env1; (A1; exA1; exA2 ++ A2) + Env2 |- (exA1 -> exA2 sim Ty1 -> Ty2); Eqs, < [exA1 -> exA2/exA] >
+
+      nolc Ty1
+      nolc Ty2
+      nolc Env2
+      exA notin fv(Ty1 -> Ty2)
+      <exA1; exA2> # Env1; (A1; exA ++ A2) + Env2 [[:FR]]
+      ----------------------------------------------------------------------------------------  :: SplitR
+      Env1; (A1; exA ++ A2) + Env2 |- (Ty1 -> Ty2) sim exA; Eqs --> Env1; (A1; exA1; exA2 ++ A2) + Env2 |- (Ty1 -> Ty2 sim exA1 -> exA2 ); Eqs, <[exA1 -> exA2/exA]>
+
+      nolc Env2
+      exA elem Env1; A1
+      -------------------------------------------------------------  :: SubExL
+      Env1; (A1; exB ++ A2) + Env2 |- exA sim exB; Eqs --> Env1; (A1 ++ A2) + Env2 |- Eqs, <[exA/exB]>
+
+      nolc Env2
+      exA elem Env1; A1
+      -------------------------------------------------------------  :: SubExR
+      Env1; (A1; exB ++ A2) + Env2 |- exB sim exA; Eqs --> Env1; (A1 ++ A2) + Env2 |- Eqs, <[exA/exB]>
+
+
+      nolc Env1
+      nolc Env2
+      ----------------------------------------------------------------  :: SubUnitAL
+      Env1; (A1; exA ++ A2) + Env2 |- Unit sim exA; Eqs --> Env1; (A1 ++ A2) + Env2 |- Eqs, <[Unit/exA]>
+
+
+      nolc Env1
+      nolc Env2
+      ----------------------------------------------------------------  :: SubUnitAR
+      Env1; (A1; exA ++ A2) + Env2 |- exA sim Unit; Eqs --> Env1; (A1 ++ A2) + Env2 |- Eqs, <[Unit/exA]>
+
+
+defns WFAlgorithmic :: '' ::=
+
+    defn Env |-ty Sch
+      :: :: WfTy :: 'WfTy'
+      {{ com Type Well-formedness }}
+      by
+
+      skA elem Env [[:IN]]
+      ------------  :: Sk
+      Env |-ty skA
+
+
+      exA elem Env [[:IN]]
+      ------------  :: Ex
+      Env |-ty exA
+
+
+      nolc Env
+      -------------  :: Unit
+      Env |-ty Unit
+
+
+      Env |-ty Ty1 [[:WFTYt1]]
+      Env |-ty Ty2 [[:WFTYt2]]
+      -------------------  :: Arr
+      Env |-ty Ty1 -> Ty2
+
+
+      Env; skA |-ty Sch [[:WFTY]]
+      ------------------------  :: Abs
+      Env |-ty forall skA. Sch
+
+    defn wf ( Env )
+      :: :: WfEnv :: 'WfEnv'
+      {{ com Scoping/Typing Environment Well-formedness }}
+      {{ tex \widehat{\texttt{wf} }~([[Env]]) }}
+      by
+
+
+      ---------------  :: Nil
+      wf(bullet)
+
+
+      wf(Env) [[:WF]]
+      A # Env [[:FR]]
+      ---------------  :: A
+      wf(Env; A)
+
+
+      wf(Env) [[:WF]]
+      Env |-ty Sch [[:WFTY]]
+      ----------------  :: Sch
+      wf(Env; x : Sch)
+
+
+      wf(Env) [[:WF]]
+      A # Env [[:FR]]
+      Env; A |-ty Sch [[:WFTY]]
+      -------------------  :: ObjSch
+      wf(Env; { [A] Sch })
+
+
+defns EnvironmentInstantiation :: '' ::=
+
+  defn DEnvin , DSubin |- A ~> DA , DSub
+    :: :: AInst :: 'AInst'
+    {{ com A instantiation }}
+    by
+
+
+      nolc DEnv
+      ------------------------------------- :: Nil
+      DEnv, DSub |- bullet ~> bullet, bullet
+
+
+      DEnvin, DSubin |- A ~> DA1, DSub
+      DEnvin; DA1 ++ DA2 |-dty DTy [[:WFDTY]]
+      ------------------------------------- :: Cons
+      DEnvin, DSubin |- A; exA ~> (DA1 ++ DA2), DSub dot [ DTy / exA ]
+
+  defn DEnvin , DSubin |- Env ~> DEnv , DSub
+    :: :: EInst :: 'EInst'
+    {{ com Environment instantiation }}
+    by
+
+      nolc DEnv
+      ------------------------------------- :: Nil
+      DEnv, DSub |- bullet ~> bullet, bullet
+
+      DEnvin, DSubin |- Env ~> DEnv, DSub1 [[:INST]]
+      DEnvin + DEnv, DSubin + DSub1 |- A ~> DA, DSub2 [[:INSTA]]
+      ----------------------------------------------------  :: A
+      DEnvin, DSubin |- Env; A ~> DEnv; DA, DSub1 + DSub2
+
+
+      DEnvin, DSubin |- Env ~> DEnv, DSub [[:INST]]
+      DSch embedin (DSubin + DSub) Sch [[:EMB]]
+      ----------------------------------  :: Sch
+      DEnvin, DSubin |- Env; x : Sch ~> DEnv; x : DSch, DSub
+
+
+      DEnvin, DSubin |- Env ~> DEnv, DSub [[:INST]]
+      (DEnvin + DEnv), (DSubin + DSub) |- A ~> DA, DSub' [[:INSTA]]
+      DSch embedin (DSubin + (DSub + DSub')) Sch [[:EMB]]
+      ----------------------------------  :: ObjSch
+      DEnvin, DSubin |- Env; {[A] Sch} ~> DEnv; {[DA] DSch}, DSub
+
+embed {{ coq
+(* Local Variables: *)
+(* company-coq-local-symbols: (("|=" . ?⊨) ("=|" . ?⫤) ("->>" . ?↠) ("=~" . ?≈) ("<|" . ?⟨) ("|>" . ?⟩)); *)
+(* End: *)}}
